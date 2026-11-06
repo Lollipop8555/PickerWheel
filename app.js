@@ -10,9 +10,19 @@
 
   const MIN_DURATION = 5;
   const MAX_DURATION = 600;
-  const STORE_KEY = 'picker-wheel/v1';
+  /** 最近一次使用的转盘（含内容与时间戳）。 */
+  const STORE_KEY = 'picker-wheel/recent';
+  /** 转动时长属于设备偏好，单独存；不参与分享，也不影响默认转盘。 */
+  const DURATION_KEY = 'picker-wheel/duration';
 
-  const DEFAULT_LINES = ['1', '2', '3', '4', '5', '6'];
+  /**
+   * 分享链接只用 `w` 一个参数：转盘内容本身。
+   * 时长是个人偏好，不参与分享，减少链接长度。
+   */
+  const SHARE_PARAM = 'w';
+  const SHARE_VERSION = '1';
+  /** 编码后的参数长度上限：过长的链接会被聊天工具、二维码截断。 */
+  const SHARE_MAX_ENCODED = 1800;
 
   const FONT_STACK =
     '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", ' +
@@ -26,8 +36,11 @@
     '#D6E9DD', '#DEE6F2', '#E9DCEF', '#F3DFD2',
   ];
 
+  /** 首次打开（既无分享链接也无本地记录）时的转盘。 */
+  const DEFAULT_LINES = ['1', '2', '3', '4', '5', '6'];
+
   const PRESETS = [
-    { name: '摇骰子', desc: '1 ~ 6', lines: ['1', '2', '3', '4', '5', '6'] },
+    { name: '摇骰子', desc: '1 ~ 6', lines: DEFAULT_LINES },
     { name: '四选一', desc: 'A / B / C / D', lines: ['A', 'B', 'C', 'D'] },
     { name: '正反抉择', desc: '正 / 反', lines: ['正', '反'] },
     {
@@ -57,6 +70,8 @@
     applyBtn: document.getElementById('applyBtn'),
     panelHint: document.getElementById('panelHint'),
     offlineBadge: document.getElementById('offlineBadge'),
+    shareUrl: document.getElementById('shareUrl'),
+    copyBtn: document.getElementById('copyBtn'),
   };
 
   const ctx = els.canvas.getContext('2d');
@@ -68,7 +83,6 @@
     durationSec: MIN_DURATION,
     size: 320,
     dpr: 1,
-    rawText: '',
     raf: 0,
   };
 
@@ -132,6 +146,96 @@
     const sat = 40 + ((index * 13) % 14);
     const light = 83 + ((index * 5) % 7);
     return `hsl(${hue.toFixed(1)} ${sat}% ${light}%)`;
+  }
+
+  /* ---------- 分享链接的编解码 ---------- */
+
+  /**
+   * 手写 UTF-8 编码：不依赖 TextEncoder，file:// 打开与 Node 测试环境都能用。
+   * 按码位遍历（for...of），因此 emoji 等代理对字符不会被拆坏。
+   */
+  function utf8Encode(text) {
+    const bytes = [];
+    for (const char of text) {
+      const code = char.codePointAt(0);
+      if (code < 0x80) {
+        bytes.push(code);
+      } else if (code < 0x800) {
+        bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+      } else if (code < 0x10000) {
+        bytes.push(
+          0xe0 | (code >> 12),
+          0x80 | ((code >> 6) & 0x3f),
+          0x80 | (code & 0x3f)
+        );
+      } else {
+        bytes.push(
+          0xf0 | (code >> 18),
+          0x80 | ((code >> 12) & 0x3f),
+          0x80 | ((code >> 6) & 0x3f),
+          0x80 | (code & 0x3f)
+        );
+      }
+    }
+    return bytes;
+  }
+
+  function utf8Decode(bytes) {
+    let text = '';
+    for (let i = 0; i < bytes.length; ) {
+      const b0 = bytes[i++];
+      let code;
+      if (b0 < 0x80) {
+        code = b0;
+      } else if (b0 < 0xe0) {
+        code = ((b0 & 0x1f) << 6) | (bytes[i++] & 0x3f);
+      } else if (b0 < 0xf0) {
+        code =
+          ((b0 & 0x0f) << 12) |
+          ((bytes[i++] & 0x3f) << 6) |
+          (bytes[i++] & 0x3f);
+      } else {
+        code =
+          ((b0 & 0x07) << 18) |
+          ((bytes[i++] & 0x3f) << 12) |
+          ((bytes[i++] & 0x3f) << 6) |
+          (bytes[i++] & 0x3f);
+      }
+      text += String.fromCodePoint(code);
+    }
+    return text;
+  }
+
+  /** 内容 → `1.<base64url>`，比 percent-encoding 短得多（中文尤其明显）。 */
+  function encodeShare(text) {
+    if (!text || typeof btoa !== 'function') return '';
+    let binary = '';
+    for (const byte of utf8Encode(text)) binary += String.fromCharCode(byte);
+    const base64 = btoa(binary)
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    return `${SHARE_VERSION}.${base64}`;
+  }
+
+  /** 解码失败一律返回空串，由调用方决定降级策略。 */
+  function decodeShare(encoded) {
+    if (!encoded || typeof atob !== 'function') return '';
+    const raw = String(encoded);
+    const dot = raw.indexOf('.');
+    if (dot < 0 || raw.slice(0, dot) !== SHARE_VERSION) return '';
+
+    const base64 = raw.slice(dot + 1).replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+
+    try {
+      const binary = atob(padded);
+      const bytes = new Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return parseLines(utf8Decode(bytes)).join('\n');
+    } catch (error) {
+      return '';
+    }
   }
 
   /* ---------- 缓动曲线：起步加速 → 高速 → 平滑减速 ---------- */
@@ -441,7 +545,6 @@
       return false;
     }
 
-    state.rawText = text.trim();
     // 保持当前角度，避免编辑时转盘突然回正闪动
     state.segments = buildSegments(lines);
 
@@ -459,6 +562,24 @@
     return clamp(Math.round(value), MIN_DURATION, MAX_DURATION);
   }
 
+  function saveDuration(seconds) {
+    try {
+      localStorage.setItem(DURATION_KEY, String(seconds));
+    } catch (error) {
+      /* 隐私模式下写入失败，忽略即可 */
+    }
+  }
+
+  function loadDuration() {
+    try {
+      const value = Number(localStorage.getItem(DURATION_KEY));
+      if (!Number.isFinite(value) || !value) return MIN_DURATION;
+      return clamp(Math.round(value), MIN_DURATION, MAX_DURATION);
+    } catch (error) {
+      return MIN_DURATION;
+    }
+  }
+
   /* ---------- 设置面板 ---------- */
 
   function isPanelOpen() {
@@ -472,6 +593,7 @@
     els.panel.setAttribute('aria-hidden', 'false');
     els.settingsBtn.setAttribute('aria-expanded', 'true');
     hint(summaryText());
+    refreshShareField();
     window.setTimeout(() => els.panel.focus({ preventScroll: true }), 80);
   }
 
@@ -488,70 +610,273 @@
 
   /* ---------- 预设 ---------- */
 
+  /**
+   * 快捷方案 = 内置方案 + 一张「最近使用」卡片（若有）。
+   * 卡片列表由 `presetEntries()` 统一给出，渲染、点击、高亮都基于它，
+   * 避免三处各自拼接顺序而出错。
+   */
+  function presetEntries() {
+    const entries = PRESETS.map((preset, index) => ({
+      index,
+      name: preset.name,
+      desc: preset.desc,
+      lines: preset.lines,
+    }));
+
+    const recent = loadRecent();
+    if (recent && !hasLines(entries, recent.text)) {
+      const lines = parseLines(recent.text);
+      entries.push({
+        index: entries.length,
+        name: formatRecentTime(recent.at),
+        desc: summarizeLines(lines),
+        lines,
+        recent: true,
+      });
+    }
+    return entries;
+  }
+
+  function hasLines(entries, text) {
+    return entries.some((entry) => entry.lines.join('\n') === text);
+  }
+
+  function createPresetButton(entry) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'preset';
+    btn.dataset.index = String(entry.index);
+    if (entry.recent) btn.dataset.recent = '1';
+
+    const title = document.createElement('b');
+    title.textContent = entry.name;
+
+    const desc = document.createElement('span');
+    desc.textContent = entry.desc;
+
+    btn.append(title, desc);
+    return btn;
+  }
+
   function renderPresets() {
+    const current = parseLines(els.lines.value).join('\n');
     const frag = document.createDocumentFragment();
-    PRESETS.forEach((preset, index) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'preset';
-      btn.dataset.index = String(index);
 
-      const title = document.createElement('b');
-      title.textContent = preset.name;
-
-      const desc = document.createElement('span');
-      desc.textContent = preset.desc;
-
-      btn.append(title, desc);
+    for (const entry of presetEntries()) {
+      const btn = createPresetButton(entry);
+      btn.classList.toggle('is-active', entry.lines.join('\n') === current);
       frag.appendChild(btn);
-    });
+    }
     els.presets.replaceChildren(frag);
   }
 
+  /** 只切高亮，不重建 DOM——每次输入都重建会让点击态闪烁。 */
   function syncPresetActive() {
-    const lines = parseLines(els.lines.value);
-    Array.from(els.presets.children).forEach((btn, index) => {
-      const preset = PRESETS[index];
-      const same =
-        preset.lines.length === lines.length &&
-        preset.lines.every((item, i) => item === lines[i]);
+    const current = parseLines(els.lines.value).join('\n');
+    const entries = presetEntries();
+
+    for (const btn of Array.from(els.presets.children)) {
+      const entry = entries[Number(btn.dataset.index)];
+      const same = Boolean(entry) && entry.lines.join('\n') === current;
       btn.classList.toggle('is-active', same);
-    });
+    }
   }
 
-  /* ---------- 本地存储 ---------- */
+  /* ---------- 分享链接 ---------- */
 
-  function save() {
+  /** 参与分享的内容：按解析后的行重组，空行与首尾空格不会污染链接。 */
+  function shareableText() {
+    return parseLines(els.lines.value).join('\n');
+  }
+
+  function isShareableProtocol() {
+    const protocol = window.location && window.location.protocol;
+    return protocol === 'http:' || protocol === 'https:';
+  }
+
+  /**
+   * 当前输入 → 完整分享链接，形如 `?w=1.xxxx`。
+   * 返回空串表示无法分享：内容为空 / 过长 / 环境拿不到地址。
+   *
+   * 只带 `w` 一个参数：时长是设备偏好，不该通过链接传播。
+   * 无关参数（utm 等）原样保留，`action=spin` 则被剔除，
+   * 否则对方打开链接会莫名其妙地自动开转。
+   */
+  function buildShareUrl() {
+    const text = shareableText();
+    if (!text || typeof URL !== 'function') return '';
+    if (!isShareableProtocol()) return '';
+
+    const href = window.location && window.location.href;
+    if (!href) return '';
+
+    const encoded = encodeShare(text);
+    // 超长链接会被聊天工具或二维码截断，宁可明确告知不可分享
+    if (!encoded || encoded.length > SHARE_MAX_ENCODED) return '';
+
+    let url;
+    try {
+      url = new URL(href);
+    } catch (error) {
+      return '';
+    }
+
+    url.searchParams.delete('action');
+    url.searchParams.set(SHARE_PARAM, encoded);
+    return url.toString();
+  }
+
+  function refreshShareField() {
+    const url = buildShareUrl();
+
+    els.shareUrl.value = url;
+    els.copyBtn.disabled = !url;
+
+    if (!isShareableProtocol()) {
+      els.shareUrl.placeholder = '通过 http(s) 打开后才能分享链接';
+    } else if (!shareableText()) {
+      els.shareUrl.placeholder = '输入内容后自动生成';
+    } else if (!url) {
+      els.shareUrl.placeholder = '内容过长，无法生成分享链接';
+    } else {
+      els.shareUrl.placeholder = '已生成，可复制分享';
+    }
+  }
+
+  /** 把当前转盘写回地址栏，方便直接复制浏览器地址。 */
+  function syncUrl() {
+    const url = buildShareUrl();
+    if (!url) return;
+
+    const history = window.history;
+    if (!history || typeof history.replaceState !== 'function') return;
+
+    try {
+      history.replaceState(null, '', url);
+    } catch (error) {
+      /* file:// 或隐私模式下不可写，忽略即可 */
+    }
+  }
+
+  async function copyText(text) {
+    const nav = window.navigator;
+    if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+      try {
+        await nav.clipboard.writeText(text);
+        return true;
+      } catch (error) {
+        /* 权限被拒时退回 execCommand */
+      }
+    }
+
+    try {
+      const temp = document.createElement('textarea');
+      temp.value = text;
+      temp.setAttribute('readonly', '');
+      temp.style.position = 'fixed';
+      temp.style.top = '-1000px';
+      temp.style.opacity = '0';
+      document.body.appendChild(temp);
+      temp.select();
+      const done = document.execCommand ? document.execCommand('copy') : false;
+      document.body.removeChild(temp);
+      return Boolean(done);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /** 从地址栏读取分享内容；没有或不合法时返回 null。 */
+  function readShare() {
+    const href = window.location && window.location.href;
+    if (!href || typeof URL !== 'function') return null;
+
+    let params;
+    try {
+      params = new URL(href).searchParams;
+    } catch (error) {
+      return null;
+    }
+
+    const text = decodeShare(params.get(SHARE_PARAM) || '');
+    return text || null;
+  }
+
+  /* ---------- 最近一次使用的转盘 ---------- */
+
+  /**
+   * 只留一条「最近使用」。缓存的是内容本身，不含时长——
+   * 时长属于设备偏好，跨设备同步没有意义。
+   */
+  function saveRecent(text) {
+    const value = parseLines(text).join('\n');
+    if (!value) return;
+
+    // 与内置方案重复时既不再写，也刻意不删已有记录：
+    // 用户只是点开面板再点「生成转盘」不该顺手抹掉上次的自定义转盘。
+    if (PRESETS.some((preset) => preset.lines.join('\n') === value)) return;
+
     try {
       localStorage.setItem(
         STORE_KEY,
-        JSON.stringify({
-          text: els.lines.value,
-          duration: readDuration(),
-        })
+        JSON.stringify({ text: value, at: Date.now() })
       );
     } catch (error) {
       /* 隐私模式下写入失败，忽略即可 */
     }
   }
 
-  function load() {
+  function clearRecent() {
+    try {
+      localStorage.removeItem(STORE_KEY);
+    } catch (error) {
+      /* 同上 */
+    }
+  }
+
+  function loadRecent() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
       if (!raw) return null;
       const data = JSON.parse(raw);
       if (!data || typeof data.text !== 'string') return null;
-      return {
-        text: data.text,
-        duration: clamp(
-          Math.round(Number(data.duration) || MIN_DURATION),
-          MIN_DURATION,
-          MAX_DURATION
-        ),
-      };
+
+      const text = parseLines(data.text).join('\n');
+      if (!text) return null;
+      return { text, at: Number(data.at) || 0 };
     } catch (error) {
       return null;
     }
+  }
+
+  /** `今天 14:05` / `3-08 14:05`，用于「最近使用」卡片的标题。 */
+  function formatRecentTime(timestamp) {
+    if (!timestamp) return '最近使用';
+
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return '最近使用';
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+
+    const sameDay =
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+    if (sameDay) return `今天 ${time}`;
+
+    const sameYear = date.getFullYear() === now.getFullYear();
+    const day = `${date.getMonth() + 1}-${pad(date.getDate())}`;
+    return sameYear ? `${day} ${time}` : `${date.getFullYear()}-${day}`;
+  }
+
+  /** 卡片描述：首条内容 + 份数，过长时省略。 */
+  function summarizeLines(lines) {
+    const first = lines[0] || '';
+    const head = first.length > 10 ? first.slice(0, 10) + '…' : first;
+    const extra = lines.length > 1 ? ` 等 ${lines.length} 项` : '';
+    return head + extra;
   }
 
   /* ---------- 事件绑定 ---------- */
@@ -563,28 +888,53 @@
 
     els.spinBtn.addEventListener('click', spin);
 
+    // 只读输入框点一下就全选，方便手动复制
+    els.shareUrl.addEventListener('click', () => {
+      if (els.shareUrl.value) els.shareUrl.select();
+    });
+
+    els.copyBtn.addEventListener('click', async () => {
+      const url = els.shareUrl.value;
+      if (!url) return;
+      const done = await copyText(url);
+      hint(
+        done ? '分享链接已复制，发给对方即可打开同一个转盘' : '复制失败，请手动选中链接复制',
+        !done
+      );
+    });
+
     els.applyBtn.addEventListener('click', () => {
       if (state.spinning) return;
       els.duration.value = String(readDuration());
       state.durationSec = readDuration();
       if (!applyInput()) return;
-      save();
+      // 只有「确认生成」才写入最近使用，避免输入过程中的每次停顿都覆盖记录
+      saveRecent(els.lines.value);
+      saveDuration(state.durationSec);
+      renderPresets();
+      syncUrl();
+      refreshShareField();
       closePanel();
     });
 
     els.presets.addEventListener('click', (event) => {
       const btn = event.target.closest('.preset');
       if (!btn) return;
-      const preset = PRESETS[Number(btn.dataset.index)];
-      if (!preset) return;
 
-      els.lines.value = preset.lines.join('\n');
+      const entry = presetEntries()[Number(btn.dataset.index)];
+      if (!entry) return;
+
+      els.lines.value = entry.lines.join('\n');
       applyInput({ silent: true });
-      syncPresetActive();
-      save();
-      hint(`已载入「${preset.name}」· ${summaryText()}`);
+      if (entry.recent) saveRecent(entry.lines.join('\n'));
+      renderPresets();
+      syncUrl();
+      refreshShareField();
+      hint(`已载入「${entry.name}」· ${summaryText()}`);
     });
 
+    // 输入时只刷新预览与面板里的链接，不碰地址栏：
+    // 未确认的草稿不该把一长串 base64 顶到 URL 上。
     let previewTimer = 0;
     els.lines.addEventListener('input', () => {
       window.clearTimeout(previewTimer);
@@ -596,6 +946,7 @@
         } else {
           hint('请至少输入一行内容', true);
         }
+        refreshShareField();
       }, 160);
     });
 
@@ -607,7 +958,6 @@
         value <= MAX_DURATION
       ) {
         state.durationSec = Math.round(value);
-        save();
         hint(`转动时长 ${state.durationSec} 秒`);
       }
     });
@@ -615,7 +965,7 @@
     els.duration.addEventListener('blur', () => {
       els.duration.value = String(readDuration());
       state.durationSec = readDuration();
-      save();
+      saveDuration(state.durationSec);
     });
 
     document.addEventListener('keydown', (event) => {
@@ -705,23 +1055,21 @@
   /* ---------- 初始化 ---------- */
 
   function init() {
+    // 转盘内容的唯一来源是地址栏：带 ?w= 的链接还原分享内容，
+    // 否则一律回到默认的骰子 1~6，不再自动恢复上一次的编辑。
+    const shared = readShare();
+    const text = shared || DEFAULT_LINES.join('\n');
+    const duration = loadDuration();
+
+    els.lines.value = text;
+    els.duration.value = String(duration);
+    state.durationSec = duration;
+
     renderPresets();
-
-    const saved = load();
-    if (saved) {
-      els.lines.value = saved.text;
-      els.duration.value = String(saved.duration);
-      state.durationSec = saved.duration;
-    } else {
-      els.lines.value = DEFAULT_LINES.join('\n');
-      els.duration.value = String(MIN_DURATION);
-      state.durationSec = MIN_DURATION;
-    }
-
-    syncPresetActive();
     updateSize();
     applyInput({ silent: true });
-    hint(summaryText());
+    hint(shared ? `已载入分享的转盘 · ${summaryText()}` : summaryText());
+    refreshShareField();
     bindEvents();
 
     if ('ResizeObserver' in window) {

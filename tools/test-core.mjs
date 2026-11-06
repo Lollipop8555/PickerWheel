@@ -26,6 +26,9 @@ const injected = source.replace(
   globalThis.__api = {
     buildSegments, segmentAt, easeProgress, parseLines, readDuration,
     applyInput, spin, state, draw, colorAt, PRESETS,
+    encodeShare, decodeShare, buildShareUrl, readShare, syncUrl,
+    saveRecent, loadRecent, clearRecent, presetEntries, summarizeLines,
+    formatRecentTime, saveDuration, loadDuration,
   };
 })();
 `
@@ -146,11 +149,19 @@ const sandbox = {
   Set,
   Map,
   Proxy,
+  Date,
+  URL,
+  URLSearchParams,
+  atob: (value) => Buffer.from(String(value), 'base64').toString('binary'),
+  btoa: (value) => Buffer.from(String(value), 'binary').toString('base64'),
   performance: { now: () => clock },
   localStorage: {
     getItem: (key) => (key in storageData ? storageData[key] : null),
     setItem: (key, value) => {
       storageData[key] = String(value);
+    },
+    removeItem: (key) => {
+      delete storageData[key];
     },
   },
   requestAnimationFrame: (fn) => rafQueue.push(fn),
@@ -172,6 +183,7 @@ const sandbox = {
     // Service Worker 注册在非 http(s) 下会直接返回，不触碰 navigator
     navigator: {},
     location: { protocol: 'file:', href: 'file:///index.html', search: '' },
+    history: { replaceState() {} },
   },
   setTimeout: (fn) => {
     fn();
@@ -362,6 +374,116 @@ for (const count of [1, 2, 3, 4, 6, 12, 16, 40]) {
   const unique = new Set(Array.from({ length: count }, (_, i) => api.colorAt(i, count)));
   check(unique.size === count, `${count} 份时颜色互不相同`, `${unique.size} 种`);
 }
+
+/* ---------- 9. 分享链接编解码 ---------- */
+
+section('[9] 分享链接编解码');
+
+const roundTrip = (text) => api.decodeShare(api.encodeShare(text));
+
+check(roundTrip('A\nB\nC') === 'A\nB\nC', 'ASCII 往返一致');
+check(roundTrip('苹果\n香蕉\n西瓜') === '苹果\n香蕉\n西瓜', '中文往返一致');
+check(roundTrip('🍎\n🍊') === '🍎\n🍊', 'emoji（代理对）往返一致');
+check(roundTrip('  A  \n\n B \n') === 'A\nB', '空行与首尾空格被归一');
+
+const encoded = api.encodeShare('A\nB');
+check(/^1\.[A-Za-z0-9_-]+$/.test(encoded), '编码形如 1.<base64url>', encoded);
+check(
+  !/[+/=]/.test(encoded.slice(2)),
+  'base64url 不含 + / = 等需转义字符'
+);
+check(api.decodeShare('') === '', '空串解码为空');
+check(api.decodeShare('garbage') === '', '无版本前缀视为无效');
+check(api.decodeShare('2.AAAA') === '', '版本不符视为无效');
+check(api.decodeShare('1.!!!!') === '', '非法 base64 视为无效');
+
+/* ---------- 10. 分享链接生成与读取 ---------- */
+
+section('[10] 分享链接生成与读取');
+
+const location = sandbox.window.location;
+const setLocation = (href) => {
+  location.href = href;
+  location.protocol = new URL(href).protocol;
+};
+
+linesInput.value = 'A\nB\nC';
+api.applyInput({ silent: true });
+
+setLocation('file:///Users/me/Picker/index.html');
+check(api.buildShareUrl() === '', 'file:// 下不生成分享链接');
+
+setLocation('https://example.com/picker/?action=spin&utm_source=wx');
+const defaultUrl = api.buildShareUrl();
+const params = new URL(defaultUrl).searchParams;
+
+check(defaultUrl.startsWith('https://example.com/picker/?'), 'https 下生成链接', defaultUrl);
+check(params.get('utm_source') === 'wx', '无关查询参数被保留');
+check(
+  params.get('action') === null,
+  'action=spin 被剔除（避免对方打开就自动转）'
+);
+check(
+  [...params.keys()].filter((key) => key !== 'utm_source').join(',') === 'w',
+  '除 w 外不附加任何参数（时长不参与分享）',
+  [...params.keys()].join(',')
+);
+check(api.decodeShare(params.get('w')) === 'A\nB\nC', '链接中的内容可还原');
+
+// 时长是本地偏好，改它不应影响链接
+api.state.durationSec = 20;
+check(api.buildShareUrl() === defaultUrl, '修改时长不改变分享链接', api.buildShareUrl());
+api.state.durationSec = 5;
+
+setLocation(defaultUrl);
+check(api.readShare() === 'A\nB\nC', 'readShare 还原分享内容', JSON.stringify(api.readShare()));
+
+setLocation('https://example.com/picker/');
+check(api.readShare() === null, '没有 w 参数时 readShare 返回 null');
+
+linesInput.value = '   \n  ';
+api.applyInput({ silent: true });
+check(api.buildShareUrl() === '', '空内容不生成分享链接');
+
+// 恢复正常输入，避免影响后续断言
+linesInput.value = 'A\nB\nC';
+api.applyInput({ silent: true });
+
+/* ---------- 11. 最近使用 ---------- */
+
+section('[11] 最近使用');
+
+linesInput.value = '甲\n乙\n丙';
+api.saveRecent(linesInput.value);
+const recent = api.loadRecent();
+check(recent && recent.text === '甲\n乙\n丙', '内容被写入最近使用');
+check(typeof recent.at === 'number' && recent.at > 0, '记录时间戳');
+
+api.saveRecent('A\nB\nC\nD');
+const afterBuiltin = api.loadRecent();
+check(
+  afterBuiltin && afterBuiltin.text === '甲\n乙\n丙',
+  '与内置方案相同则跳过写入（不清空已有记录）'
+);
+
+const entries = api.presetEntries();
+check(
+  entries.length === api.PRESETS.length + 1,
+  '快捷方案末尾多出 1 张最近使用卡片',
+  String(entries.length)
+);
+check(entries[entries.length - 1].recent === true, '最近使用排在最后');
+check(
+  entries[entries.length - 1].lines.join('\n') === '甲\n乙\n丙',
+  '卡片内容正确'
+);
+
+api.clearRecent();
+check(api.loadRecent() === null, 'clearRecent 清空记录');
+check(
+  api.presetEntries().length === api.PRESETS.length,
+  '清空后只剩内置方案'
+);
 
 /* ---------- 汇总 ---------- */
 

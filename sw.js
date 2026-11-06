@@ -5,7 +5,8 @@
    站点是纯静态的，除本文件外没有任何构建产物。
    ========================================================================== */
 
-const VERSION = 'v1';
+// v2：app.js / index.html / styles.css 新增分享链接功能，需让旧缓存失效
+const VERSION = 'v2';
 const SHELL_CACHE = `picker-shell-${VERSION}`;
 const RUNTIME_CACHE = `picker-runtime-${VERSION}`;
 

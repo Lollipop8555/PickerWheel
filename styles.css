@@ -425,6 +425,66 @@ body {
   color: var(--danger);
 }
 
+/* ---------- 分享链接 ---------- */
+
+.share-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-field input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  text-overflow: ellipsis;
+  cursor: text;
+}
+
+.share-field input[type="text"]:focus {
+  outline: none;
+  border-color: #9dbbaf;
+  color: var(--ink);
+  box-shadow: 0 0 0 4px rgba(110, 143, 132, 0.14);
+}
+
+.ghost-btn {
+  flex: 0 0 auto;
+  height: 44px;
+  padding: 0 16px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--accent-deep);
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease,
+    transform 0.16s var(--ease-out), opacity 0.16s ease;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: #a9c3b8;
+  background: #f6faf8;
+  transform: translateY(-1px);
+}
+
+.ghost-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
+.ghost-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
 /* ---------- 表单 ---------- */
 
 .field {
@@ -545,6 +605,16 @@ input[type="number"]::-webkit-inner-spin-button {
   box-shadow: inset 0 0 0 1px rgba(110, 143, 132, 0.55);
 }
 
+/* 「最近使用」卡片：虚线边框，与内置方案区分开 */
+.preset[data-recent] {
+  border-style: dashed;
+}
+
+.preset[data-recent] b {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+
 .preset b {
   font-size: 13.5px;
   font-weight: 650;
@@ -619,6 +689,7 @@ input[type="number"]::-webkit-inner-spin-button {
   .scrim,
   .icon-btn,
   .primary-btn,
+  .ghost-btn,
   .preset {
     transition-duration: 0.12s;
   }

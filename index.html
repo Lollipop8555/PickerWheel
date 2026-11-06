@@ -94,6 +94,24 @@
         <span class="label">快捷方案</span>
         <div class="presets" id="presets"></div>
       </section>
+
+      <section class="field">
+        <label for="shareUrl">
+          分享链接
+          <span class="hint">发给别人，打开就是同一个转盘</span>
+        </label>
+        <div class="share-field">
+          <input
+            id="shareUrl"
+            type="text"
+            readonly
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="输入内容后自动生成"
+          />
+          <button id="copyBtn" class="ghost-btn" type="button" disabled>复制</button>
+        </div>
+      </section>
     </div>
 
     <div class="panel-foot">
