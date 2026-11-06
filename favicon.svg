@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Picker Wheel</title>
+  <g>
+    <path d="M32 32L32.00 2.00A30 30 0 0 1 57.98 17.00Z" fill="#c46050"/>
+    <path d="M32 32L57.98 17.00A30 30 0 0 1 57.98 47.00Z" fill="#c67e38"/>
+    <path d="M32 32L57.98 47.00A30 30 0 0 1 32.00 62.00Z" fill="#9e952e"/>
+    <path d="M32 32L32.00 62.00A30 30 0 0 1 6.02 47.00Z" fill="#6e9e4a"/>
+    <path d="M32 32L6.02 47.00A30 30 0 0 1 6.02 17.00Z" fill="#489870"/>
+    <path d="M32 32L6.02 17.00A30 30 0 0 1 32.00 2.00Z" fill="#409294"/>
+  </g>
+  <circle cx="32" cy="32" r="30" fill="none" stroke="#ffffff" stroke-width="1.6"/>
+  <circle cx="32" cy="32" r="10.2" fill="#fffcf8"/>
+</svg>
