@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支有新的推送时，取消仍在跑的旧任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: 校验与测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 静态自检
+        run: node tools/verify.mjs
+
+      - name: 图标可重复生成
+        run: |
+          node tools/generate-icons.mjs
+          # 若脚本输出与仓库内图标不一致，说明图标是手改的、和生成器已脱节
+          if [ -n "$(git status --porcelain -- icons favicon.ico favicon.svg favicon-16.png favicon-32.png favicon-48.png)" ]; then
+            echo "::error::图标与 tools/generate-icons.mjs 的输出不一致，请重新执行生成脚本并提交"
+            git --no-pager diff --stat -- icons favicon.ico favicon.svg favicon-16.png favicon-32.png favicon-48.png
+            exit 1
+          fi
+          echo "图标与生成脚本一致 ✅"
+
+      - name: 核心逻辑测试
+        run: node tools/test-core.mjs
+
+  deploy:
+    name: 部署到 GitHub Pages
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 GitHub Pages
+        uses: actions/configure-pages@v5
+
+      # upload-pages-artifact 只能整目录上传，无法排除文件，
+      # 因此先把运行时需要的东西拷进 dist/，再发布 dist/。
+      # 这样 tools/、.github/ 等不会出现在站点上。
+      - name: 准备发布目录
+        run: |
+          set -euo pipefail
+          mkdir -p dist/icons
+          cp index.html styles.css app.js sw.js manifest.webmanifest LICENSE dist/
+          cp favicon.svg favicon.ico favicon-16.png favicon-32.png favicon-48.png dist/
+          cp icons/*.png dist/icons/
+          echo "--- 发布内容 ---"
+          find dist -type f | sort
+
+      - name: 打包站点
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+          retention-days: 1
+
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v4

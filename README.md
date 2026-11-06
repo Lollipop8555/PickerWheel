@@ -36,12 +36,9 @@
 
 ## 部署到 GitHub Pages
 
-仓库已包含全部静态文件，无需构建步骤：
+推送到 `main` 分支即自动部署，详见下方「持续集成」。首次部署前需要一次性启用：
 
-1. 将整个仓库推送到 GitHub（`index.html`、`styles.css`、`app.js`、`sw.js`、`manifest.webmanifest`、`icons/` 缺一不可）。
-2. 进入仓库 **Settings → Pages**。
-3. Source 选择 **Deploy from a branch**，分支选 `main`、目录选 `/ (root)`，保存。
-4. 稍候访问 `https://<用户名>.github.io/<仓库名>/`。
+进入 **Settings → Pages**，把 **Source** 设为 **GitHub Actions**。
 
 GitHub Pages 默认启用 HTTPS，Service Worker 可以直接工作。首次访问后地址栏会出现安装入口，装到桌面即可离线使用。
 
@@ -90,3 +87,36 @@ node tools/generate-icons.mjs
 - 抗锯齿时颜色按 alpha 加权平均。若把透明样本的 `rgb(0,0,0)` 也一并平均，边缘会被拉暗，在浅色背景上呈现出一圈发灰的脏边。
 - 图标不含指针。16px 下指针会被压成一个看不出形状的小三角，反而显脏。
 - maskable 版本把内容缩进到 80% 安全区内，避免被系统裁成圆形或圆角矩形时切掉扇区。
+
+## 开发与测试
+
+无第三方依赖，只需 Node.js 18+：
+
+```bash
+node tools/verify.mjs        # 静态自检：语法、manifest、资源引用、SW 清单、图标
+node tools/test-core.mjs     # 核心逻辑测试：环形合并、命中判定、缓动、时长钳制
+node tools/generate-icons.mjs # 重新生成全部图标
+```
+
+`test-core.mjs` 用 Node 的 `vm` 模块配合最小 DOM 桩直接执行 [`app.js`](app.js)，因此不需要浏览器或 Puppeteer。
+
+## 持续集成
+
+[`ci.yml`](.github/workflows/ci.yml) 在每次 push 与 PR 时运行，包含两个 job：
+
+**`verify`** — 校验与测试：
+
+1. 静态自检 + 核心逻辑测试
+2. 重新执行图标生成脚本，若产物与仓库不一致则报错。这道检查能防止有人手改 PNG 导致图标与生成器脱节——图标只能是脚本的输出。
+
+**`deploy`** — 部署到 GitHub Pages，仅在 `main` 分支的 push 时触发，且必须在 `verify` 通过后才会执行。
+
+部署时先把运行时文件拷进 `dist/` 再发布，因此 `tools/`、`.github/` 不会出现在站点上。
+
+### 启用 Pages
+
+仓库推送后，进入 **Settings → Pages**，把 **Source** 设为 **GitHub Actions**（不是 `Deploy from a branch`）。之后 `main` 分支的每次推送都会自动构建并发布。
+
+## 许可
+
+[MIT](LICENSE) © 2026 lollipop
